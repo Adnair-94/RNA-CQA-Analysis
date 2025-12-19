@@ -1,0 +1,308 @@
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(patchwork)
+  library(grid)
+})
+
+# =========================
+# THEME (Nature-style frame)
+# =========================
+nature_theme_frame <- theme_classic(base_family = "Arial") +
+  theme(
+    text = element_text(family = "Arial", size = 12, face = "bold"),
+    rect = element_blank(), panel.grid = element_blank(),
+    axis.line = element_line(color = "black", linewidth = 0.5),
+    axis.ticks.length = unit(-0.15, "cm"),
+    axis.ticks = element_line(colour = "black", linewidth = 0.5),
+    axis.text.x = element_text(color = "black", size = 12,
+                               margin = unit(c(t=2.5, r=0, b=0, l=0), "mm"), face="bold"),
+    axis.text.y = element_text(color = "black", size = 12,
+                               margin = unit(c(t=0, r=2.5, b=0, l=0), "mm"), face="bold"),
+    panel.border = element_rect(colour = "black", fill = NA, linewidth = 0.5),
+    axis.title  = element_text(face = "bold", size = 12),
+    strip.text  = element_text(face = "bold", size = 12),
+    legend.text = element_text(size = 12, face = "bold"),
+    legend.title= element_text(face = "bold", size = 12),
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    legend.justification = "center",
+    legend.spacing.x = unit(20, "mm"),
+    legend.key.width = unit(5, "mm"),
+    legend.key.height = unit(5, "mm"),
+    legend.margin = margin(t=3, r=0, b=0, l=0, unit="mm")
+  )
+
+# Shared condition scale (use this in BOTH plots)
+cond_scale <- scale_fill_manual(
+  values = c("NaCl" = "grey70",
+             "CH3COOK" = "grey40",
+             "Standard process" = "grey10"),
+  name = "Condition",
+  labels = c("NaCl" = "NaCl",
+             "CH3COOK" = "CH\u2083COOK",   # CH₃COOK as plain text
+             "Standard process" = "Standard process")
+)
+
+# Shared x-levels
+x_levels <- c("1","2","3","4","5","Standard process")
+pd <- position_dodge(width = 0.7)
+
+# =========================
+# [1] 5′ CAPPING (data + plot)
+# =========================
+cap_csv <- "C://Users//CBE-User ZK02//OneDrive//Recycling capping effeciency.csv"
+cap_wide <- read_csv(cap_csv, show_col_types = FALSE)
+
+cap_long <- cap_wide %>%
+  mutate(Cycle = as.character(Cycle)) %>%
+  pivot_longer(cols = c(`Output (NaCl Buffer)`,`Output (KoAc Buffer)`,Baseline),
+               names_to = "Condition", values_to = "Cap") %>%
+  filter(!is.na(Cap)) %>%
+  mutate(
+    Condition = recode(Condition,
+                       `Output (NaCl Buffer)`="NaCl",
+                       `Output (KoAc Buffer)`="CH3COOK",
+                       `Baseline`="Standard process"
+    ),
+    Condition = factor(Condition, levels=c("NaCl","CH3COOK","Standard process")),
+    X = if_else(Condition=="Standard process","Standard process", Cycle),
+    X = factor(X, levels = x_levels)
+  )
+
+cap_summ <- cap_long %>%
+  group_by(Condition, X) %>%
+  summarise(
+    mean_cap = mean(Cap, na.rm = TRUE),
+    sd_cap   = sd(Cap,  na.rm = TRUE),
+    n        = dplyr::n(),
+    .groups  = "drop"
+  ) %>%
+  mutate(err_col = if_else(Condition == "Standard process", "grey60", "black"))
+
+p_cap <- ggplot() +
+  geom_col(data=cap_summ, aes(X, mean_cap, fill=Condition),
+           position=pd, width=0.4, colour="black", linewidth=0.4, show.legend=TRUE) +
+  geom_errorbar(
+    data = cap_summ,
+    aes(X,
+        ymin = pmax(mean_cap - sd_cap, 0),
+        ymax = mean_cap + sd_cap,
+        group = Condition,
+        colour = err_col),   # <- map color
+    position = pd,
+    width = 0.15,
+    linewidth = 0.4,
+    show.legend = FALSE
+  ) +
+  scale_color_identity() +
+  geom_point(data=cap_long %>% filter(Condition!="Standard process"),
+             aes(X, Cap, shape=Condition),
+             position=position_jitterdodge(jitter.width=0.08, dodge.width=0.7, seed=1),
+             size=2, stroke=0.4, fill="black", colour="black", alpha=0.45, show.legend=FALSE) +
+  geom_point(data=cap_long %>% filter(Condition=="Standard process"),
+             aes(X, Cap),
+             position=position_jitter(width=0.08, seed=1),
+             size=2, shape=21, stroke=0.4, fill="white", colour="black", show.legend=FALSE) +
+  cond_scale +
+  scale_shape_manual(values=c("NaCl"=21,"CH3COOK"=21), guide="none") +
+  scale_y_continuous(name="5′ capping efficiency (%)",
+                     limits=c(0,100), breaks=seq(0,100,20),
+                     expand=expansion(mult=c(0,0.05))) +
+  labs(x="Cycle", title="5′ Capping efficiency") +
+  nature_theme_frame +
+  theme(text        = element_text(size = 12),
+        plot.title  = element_text(size = 12, hjust = 0.5, face = "bold"),
+        axis.title  = element_text(size = 12, face = "bold"),
+        axis.text   = element_text(size = 12, face = "bold"),
+        legend.title= element_text(size = 12, face = "bold"),
+        legend.text = element_text(size = 12, face = "bold"),
+        strip.text  = element_text(size = 12, face = "bold"),
+        legend.position="none")  # HIDE legend here → legend will come from dsRNA
+
+# =========================
+# [2] dsRNA (data + plot)
+# =========================
+ds_wide <- tribble(
+  ~Cycle, ~Repeat, ~`Buffer A`, ~`Buffer B`, ~`Standard process`,
+  1,1,0.16,0.63,1.58, 2,1,0.30,0.71,1.41, 3,1,0.39,0.83,2.44,
+  4,1,0.48,0.58,NA,   5,1,0.46,0.53,NA,
+  1,2,0.21,0.62,NA,   2,2,0.21,0.41,NA,   3,2,0.36,0.59,NA,
+  4,2,0.29,0.40,NA,   5,2,0.22,0.43,NA,
+  1,3,0.31,0.63,NA,   2,3,0.49,0.46,NA,   3,3,0.59,0.52,NA,
+  4,3,0.76,0.53,NA,   5,3,0.90,0.44,NA
+)
+
+ds_long <- ds_wide %>%
+  pivot_longer(cols=c(`Buffer A`,`Buffer B`,`Standard process`),
+               names_to="Condition0", values_to="dsRNA") %>%
+  filter(!is.na(dsRNA)) %>%
+  mutate(
+    Cycle = as.character(Cycle),
+    Condition = recode(Condition0, "Buffer A"="NaCl", "Buffer B"="CH3COOK",
+                       "Standard process"="Standard process"),
+    Condition = factor(Condition, levels=c("NaCl","CH3COOK","Standard process")),
+    X = if_else(Condition=="Standard process","Standard process", Cycle),
+    X = factor(X, levels=x_levels)
+  )
+
+ds_summ <- ds_long %>%
+  group_by(Condition, X) %>%
+  summarise(mean_ds = mean(dsRNA), sd_ds = sd(dsRNA), n=dplyr::n(), .groups="drop") %>%
+  mutate(err_col = if_else(Condition=="Standard process", "grey60", "black"))  # lighter errorbar for SP
+
+p_dsrna <- ggplot() +
+  geom_col(data=ds_summ, aes(X, mean_ds, fill=Condition),
+           position=pd, width=0.4, colour="black", linewidth=0.4, show.legend=TRUE) +
+  # Error bars: use grey60 for Standard process for visibility
+  geom_errorbar(data=ds_summ,
+                aes(X, ymin=pmax(mean_ds - sd_ds, 0), ymax=mean_ds + sd_ds,
+                    group=Condition, colour=err_col),
+                position=pd, width=0.15, linewidth=0.4, show.legend=FALSE) +
+  scale_color_identity() +  # keeps errorbar colors out of legend
+  geom_point(data=ds_long %>% filter(Condition!="Standard process"),
+             aes(X, dsRNA, shape=Condition),
+             position=position_jitterdodge(jitter.width=0.08, jitter.height=0, dodge.width=0.7, seed=1),
+             size=2, stroke=0.4, fill="black", colour="black", alpha=0.45, show.legend=FALSE) +
+  geom_point(data=ds_long %>% filter(Condition=="Standard process"),
+             aes(X, dsRNA),
+             position=position_jitter(width=0.08, seed=1),
+             size=2, shape=21, stroke=0.4, fill="white", colour="black", show.legend=FALSE) +
+  cond_scale +
+  scale_shape_manual(values=c("NaCl"=21,"CH3COOK"=21), guide="none") +
+  scale_y_continuous(name="dsRNA (%)",
+                     breaks=scales::pretty_breaks(n=5),
+                     expand=expansion(mult=c(0,0.05))) +
+  labs(x="Cycle", title="dsRNA") +
+  nature_theme_frame +
+  theme(text        = element_text(size = 12),
+        plot.title  = element_text(size = 12, hjust = 0.5, face = "bold"),
+        axis.title  = element_text(size = 12, face = "bold"),
+        axis.text   = element_text(size = 12, face = "bold"),
+        legend.title= element_text(size = 12, face = "bold"),
+        legend.text = element_text(size = 12, face = "bold"),
+        strip.text  = element_text(size = 12, face = "bold"),
+        legend.position="bottom")  # KEEP legend here → shared legend source
+
+# =========================
+# [3] COMBINE (legend from dsRNA)
+# =========================
+combine_figs <- TRUE
+if (combine_figs) {
+  fig_cap_dsrna <- (p_cap / p_dsrna) +
+    plot_layout(guides = "auto")
+  ggsave("fig_cqas_final/CQAs_capping_dsrna.tiff",
+         fig_cap_dsrna, width=180, height=150, units="mm",
+         dpi=600, compression="lzw")
+  ggsave("fig_cqas_final/CQAs_capping_dsrna.pdf",
+         fig_cap_dsrna, width=180, height=150, units="mm")
+}
+
+# =========================
+# [4] STATS & EXPORTS (CAPPING)
+# =========================
+tidy_pairwise <- function(pw_obj, group_levels=NULL){
+  mat <- pw_obj$p.value
+  if (is.null(rownames(mat)) || is.null(colnames(mat))) {
+    if (is.null(group_levels)) stop("Provide group_levels.")
+    rownames(mat) <- group_levels[-1]; colnames(mat) <- group_levels[-length(group_levels)]
+  }
+  as.data.frame(as.table(mat), stringsAsFactors=FALSE) %>%
+    rename(group1=Var1, group2=Var2, p_value=Freq) %>%
+    filter(!is.na(p_value)) %>%
+    mutate(q_value_BH = p.adjust(p_value, method="BH"))
+}
+
+# Capping: within-buffer + pairwise
+cap_recycling <- cap_long %>% filter(Condition %in% c("NaCl","CH3COOK"))
+cap_standard  <- cap_long %>% filter(Condition=="Standard process") %>% pull(Cap)
+
+kw_within_cap <- list(); pw_within_cap <- list()
+for (buf in c("NaCl","CH3COOK")) {
+  dfb <- cap_recycling %>% filter(Condition==buf)
+  kw  <- kruskal.test(Cap ~ Cycle, data=dfb)
+  kw_within_cap[[buf]] <- tibble(Buffer=buf,
+                                 statistic_H=unname(kw$statistic),
+                                 df=unname(kw$parameter), p_value=kw$p.value)
+  cyc_lv <- dfb %>% arrange(as.numeric(Cycle)) %>% pull(Cycle) %>% unique()
+  pw  <- pairwise.wilcox.test(dfb$Cap, dfb$Cycle, p.adjust.method="BH", exact=FALSE)
+  pw_within_cap[[buf]] <- tidy_pairwise(pw, group_levels=cyc_lv) %>%
+    mutate(Buffer=buf, test="pairwise_wilcox_cycles") %>% relocate(Buffer, test)
+}
+kw_within_cap_tbl <- bind_rows(kw_within_cap)
+pw_within_cap_tbl <- bind_rows(pw_within_cap)
+
+# Overall (pooled)
+kw_overall_cap <- kruskal.test(Cap ~ Condition, data=cap_long)
+kw_overall_cap_tbl <- tibble(test="kruskal_overall_groups",
+                             statistic_H=unname(kw_overall_cap$statistic),
+                             df=unname(kw_overall_cap$parameter),
+                             p_value=kw_overall_cap$p.value)
+pw_overall_cap <- pairwise.wilcox.test(cap_long$Cap, cap_long$Condition, p.adjust.method="BH", exact=FALSE)
+pw_overall_cap_tbl <- tidy_pairwise(pw_overall_cap, group_levels=levels(cap_long$Condition)) %>%
+  mutate(test="pairwise_wilcox_overall") %>% relocate(test)
+
+# Recycling vs Standard (per buffer)
+wilcox_vs_std <- function(x, std){ wilcox.test(x, std, exact=FALSE) }
+cap_vs_std_tbl <- bind_rows(
+  {x <- cap_recycling %>% filter(Condition=="NaCl") %>% pull(Cap)
+  t <- wilcox_vs_std(x, cap_standard)
+  tibble(Buffer="NaCl", n_recycling=length(x), n_standard=length(cap_standard),
+         W=unname(t$statistic), p_value=t$p.value,
+         median_recycling=median(x), median_standard=median(cap_standard),
+         diff_pp = median(x) - median(cap_standard))},
+  {x <- cap_recycling %>% filter(Condition=="CH3COOK") %>% pull(Cap)
+  t <- wilcox_vs_std(x, cap_standard)
+  tibble(Buffer="CH3COOK", n_recycling=length(x), n_standard=length(cap_standard),
+         W=unname(t$statistic), p_value=t$p.value,
+         median_recycling=median(x), median_standard=median(cap_standard),
+         diff_pp = median(x) - median(cap_standard))}
+)
+
+dir.create("fig_main/stats_capping", recursive=TRUE, showWarnings=FALSE)
+readr::write_csv(kw_within_cap_tbl, "fig_main/stats_capping/capping_within_buffer_kruskal.csv")
+readr::write_csv(pw_within_cap_tbl, "fig_main/stats_capping/capping_within_buffer_pairwise_wilcoxon_BH.csv")
+readr::write_csv(kw_overall_cap_tbl, "fig_main/stats_capping/capping_overall_kruskal.csv")
+readr::write_csv(pw_overall_cap_tbl, "fig_main/stats_capping/capping_overall_pairwise_wilcoxon_BH.csv")
+readr::write_csv(cap_vs_std_tbl,     "fig_main/stats_capping/capping_recycling_vs_standard_wilcoxon.csv")
+
+# =========================
+# [5] STATS & EXPORTS (dsRNA)
+# =========================
+ds_recycling <- ds_long %>% filter(Condition %in% c("NaCl","CH3COOK"))
+ds_standard  <- ds_long %>% filter(Condition=="Standard process") %>% pull(dsRNA)
+
+kw_within_ds <- list(); pw_within_ds <- list()
+for (buf in c("NaCl","CH3COOK")) {
+  dfb <- ds_recycling %>% filter(Condition==buf)
+  kw  <- kruskal.test(dsRNA ~ Cycle, data=dfb)
+  kw_within_ds[[buf]] <- tibble(Buffer=buf,
+                                statistic_H=unname(kw$statistic),
+                                df=unname(kw$parameter), p_value=kw$p.value)
+  cyc_lv <- dfb %>% arrange(as.numeric(Cycle)) %>% pull(Cycle) %>% unique()
+  pw  <- pairwise.wilcox.test(dfb$dsRNA, dfb$Cycle, p.adjust.method="BH", exact=FALSE)
+  pw_within_ds[[buf]] <- tidy_pairwise(pw, group_levels=cyc_lv) %>%
+    mutate(Buffer=buf, test="pairwise_wilcox_cycles") %>% relocate(Buffer, test)
+}
+kw_within_ds_tbl <- bind_rows(kw_within_ds)
+pw_within_ds_tbl <- bind_rows(pw_within_ds)
+
+# Recycling vs Standard
+ds_vs_std_tbl <- bind_rows(
+  {x <- ds_recycling %>% filter(Condition=="NaCl") %>% pull(dsRNA)
+  t <- wilcox.test(x, ds_standard, exact=FALSE)
+  tibble(Buffer="NaCl", n_recycling=length(x), n_standard=length(ds_standard),
+         W=unname(t$statistic), p_value=t$p.value,
+         median_recycling=median(x), median_standard=median(ds_standard),
+         diff_pp = median(x) - median(ds_standard))},
+  {x <- ds_recycling %>% filter(Condition=="CH3COOK") %>% pull(dsRNA)
+  t <- wilcox.test(x, ds_standard, exact=FALSE)
+  tibble(Buffer="CH3COOK", n_recycling=length(x), n_standard=length(ds_standard),
+         W=unname(t$statistic), p_value=t$p.value,
+         median_recycling=median(x), median_standard=median(ds_standard),
+         diff_pp = median(x) - median(ds_standard))}
+)
+
+dir.create("fig_main/stats_dsRNA", recursive=TRUE, showWarnings=FALSE)
+readr::write_csv(kw_within_ds_tbl, "fig_main/stats_dsRNA/dsRNA_within_buffer_kruskal.csv")
+readr::write_csv(pw_within_ds_tbl, "fig_main/stats_dsRNA/dsRNA_within_buffer_pairwise_wilcoxon_BH.csv")
+readr::write_csv(ds_vs_std_tbl,    "fig_main/stats_dsRNA/dsRNA_recycling_vs_Standard_process_wilcoxon.csv")
