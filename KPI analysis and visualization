@@ -1,0 +1,169 @@
+# ============================================
+# FINAL: Efficiency KPIs + Cost-per-mg (rounded) + Composition
+# ============================================
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(cowplot)
+})
+
+# ---------------- Output helpers ----------------
+outdir <- "ivt_kpi_figs_final"
+dir.create(outdir, showWarnings = FALSE)
+
+save_both <- function(p, name, w=180, h=175, dpi=600){
+  ggsave(file.path(outdir, paste0(name, ".png")),  p, width=w, height=h, units="mm",
+         dpi=dpi, bg="white")
+  ggsave(file.path(outdir, paste0(name, ".tiff")), p, width=w, height=h, units="mm",
+         dpi=dpi, compression="lzw", bg="white")
+}
+
+# ---------------- Theme ----------------
+pal        <- c("Standard\nprocess" = "#B3B3B3", "Recycling" = "#666666")
+comp_fills <- c("5' cap analog"="#1A1A1A","DNA"="#B3B3B3","NTPs"="#FFFFFF","T7"="#666666")
+
+nature_theme <- function(base_family="Arial", base_size=12){
+  theme_classic(base_family=base_family, base_size=base_size) +
+    theme(
+      text         = element_text(family="Arial", size=12, face="bold"),
+      plot.title   = element_text(family="Arial", size=12, face="bold", hjust=0),
+      axis.title   = element_text(family="Arial", size=12, face="bold"),
+      axis.text    = element_text(family="Arial", size=12, face="bold"),
+      legend.title = element_text(family="Arial", size=12, face="bold"),
+      legend.text  = element_text(family="Arial", size=10, face="bold"),
+      panel.grid   = element_blank(),
+      axis.line    = element_line(color="black", linewidth=0.5),
+      axis.ticks.length = unit(-0.15, "cm"),
+      axis.ticks   = element_line(colour="black", linewidth=0.5),
+      axis.text.x  = element_text(color="black", size=12,
+                                  margin = unit(c(t=2.5, r=0, b=0, l=0), "mm")),
+      axis.text.y  = element_text(color="black", size=12, lineheight=0.9,
+                                  margin = unit(c(t=0, r=2.5, b=0, l=0), "mm")),
+      panel.border = element_rect(colour="black", fill=NA, linewidth=0.5)
+    )
+}
+
+panelize <- function(p, lwd = 0.6){
+  p + theme(
+    plot.background = element_blank(),
+    panel.border    = element_rect(colour="black", fill=NA, linewidth=lwd),
+    plot.margin     = margin(10, 12, 10, 12)
+  )
+}
+
+# ---------------- Data ----------------
+price <- list(cleancap_per_umol=39.20, ntp_per_umol=0.212, t7_per_ug=0.192, dna_per_ug=0.416)
+
+df <- tribble(
+  ~Condition,            ~Yield_mg, ~DNA_ug, ~T7_ug, ~NTP_umol, ~CleanCap_umol,
+  "Recycling",             73.65,     1200,     600,     400,          20,
+  "Standard\nprocess",     76.00,      400,     800,     320,          80
+) |>
+  mutate(
+    Condition       = factor(Condition, levels=c("Standard\nprocess","Recycling")),
+    Yield_g         = Yield_mg/1000,
+    DNA_USD         = DNA_ug*price$dna_per_ug,
+    T7_USD          = T7_ug*price$t7_per_ug,
+    NTP_USD         = NTP_umol*price$ntp_per_umol,
+    Cap_USD         = CleanCap_umol*price$cleancap_per_umol,
+    Total_cost_USD  = DNA_USD + T7_USD + NTP_USD + Cap_USD,
+    Cost_per_g_USD  = Total_cost_USD / Yield_g,
+    Cost_per_mg_USD = Cost_per_g_USD / 1000
+  )
+
+# Convenience rows
+std <- df |> filter(Condition=="Standard\nprocess")
+rec <- df |> filter(Condition=="Recycling")
+
+# ---------------- A) Efficiency KPIs (robust, vectorized — correct denominators) ----------------
+eff <- bind_rows(
+  df |> transmute(Condition, metric="cap", val = Yield_g/CleanCap_umol),
+  df |> transmute(Condition, metric="t7",  val = Yield_g/T7_ug),
+  df |> transmute(Condition, metric="ntp", val = Yield_g/NTP_umol),
+  df |> transmute(Condition, metric="dna", val = Yield_g/DNA_ug)
+) |>
+  pivot_wider(names_from=Condition, values_from=val)
+
+kpi_vals <- tibble(
+  KPI   = c("5' cap","T7","NTP","DNA","Cost saving"),
+  Ratio = c(
+    eff$`Recycling`[eff$metric=="cap"] / eff$`Standard\nprocess`[eff$metric=="cap"],
+    eff$`Recycling`[eff$metric=="t7"]  / eff$`Standard\nprocess`[eff$metric=="t7"],
+    eff$`Recycling`[eff$metric=="ntp"] / eff$`Standard\nprocess`[eff$metric=="ntp"],
+    eff$`Recycling`[eff$metric=="dna"] / eff$`Standard\nprocess`[eff$metric=="dna"],
+    std$Cost_per_g_USD / rec$Cost_per_g_USD
+  ) |> as.numeric()
+) |>
+  mutate(KPI = factor(KPI, levels=c("5' cap","T7","NTP","DNA","Cost saving"))) |>
+  arrange(Ratio)
+
+ratio_lim <- c(0, max(1.05, max(kpi_vals$Ratio, na.rm = TRUE)*1.06))
+
+p_kpi <- ggplot(kpi_vals, aes(y=KPI, x=Ratio)) +
+  geom_col(fill="#8C8C8C", color="black", width=0.6) +
+  geom_text(aes(label=scales::number(Ratio, accuracy=0.01)),
+            hjust=-0.1, fontface="bold", size=2.8) +
+  geom_vline(xintercept=1, linetype="dashed", linewidth=0.4) +
+  scale_x_continuous(limits=ratio_lim, expand=c(0,0.02)) +
+  labs(title="Efficiency in material utilization and cost",
+       x="Fold decrease (Standard/Recycling)", y=NULL) +
+  nature_theme() +
+  coord_cartesian(clip="off")
+
+# ---------------- B) IVT raw-material cost per mg RNA (rounded USD) ----------------
+xmax_cost_mg <- max(df$Cost_per_mg_USD) * 1.25
+
+p_cost <- ggplot(df, aes(y=Condition, x=Cost_per_mg_USD, fill=Condition)) +
+  geom_col(width=0.6, color="black") +
+  scale_fill_manual(values=pal, guide="none") +
+  geom_text(aes(label=scales::number(Cost_per_mg_USD, accuracy=1)),   # rounded labels
+            hjust=-0.1, size=2.8, fontface="bold") +
+  scale_x_continuous(limits=c(0, xmax_cost_mg), expand=c(0, 0.02),
+                     labels = scales::number_format(accuracy=1)) +    # rounded axis
+  labs(title="IVT raw-material cost per mg of RNA",
+       x="USD per mg RNA",
+       y=NULL) +
+  nature_theme() + 
+
+  coord_cartesian(clip="off")
+
+# ---------------- C) Raw-material cost composition (percent) ----------------
+df_share <- df |>
+  transmute(Condition, `5' cap analog`=Cap_USD, DNA=DNA_USD, NTPs=NTP_USD, T7=T7_USD) |>
+  pivot_longer(-Condition, names_to="Component", values_to="USD") |>
+  group_by(Condition) |>
+  mutate(Share = 100 * USD / sum(USD)) |>
+  ungroup() |>
+  mutate(Component = factor(Component, levels=c("5' cap analog","DNA","NTPs","T7")))
+
+p_comp <- ggplot(df_share, aes(x=Share, y=Condition, fill=Component)) +
+  geom_col(color="black", width=0.6, position=position_stack(reverse=TRUE)) +
+  scale_fill_manual(values=comp_fills, name=NULL) +
+  scale_x_continuous(breaks=seq(0,100,20), limits=c(0,100), expand=c(0,0)) +
+  labs(title="Raw-material cost composition (percent of total)",
+       x="Percent of total raw-material cost", y=NULL) +
+  nature_theme() +
+  theme(legend.position="bottom",
+        legend.box = "horizontal",
+        legend.justification = "center",
+        legend.spacing.x = unit(7.5, "mm"),      # horizontal gap between items
+        legend.key.width = unit(5, "mm"),      # widen legend boxes
+        legend.key.height = unit(5, "mm"),     # uniform box height
+        
+        # slight space between legend text and boxes
+        legend.text = element_text( margin = margin(l = 2, r = 6, unit = "mm")),
+        legend.box.spacing = unit(0, "mm") ) +
+  coord_cartesian(clip="off")
+
+# ---------------- Combine with separators ----------------
+p_kpi_b  <- panelize(p_kpi)
+p_cost_b <- panelize(p_cost)
+p_comp_b <- panelize(p_comp)
+
+core <- plot_grid(p_kpi_b, p_cost_b, p_comp_b, ncol = 1, align = "v", rel_heights = c(1,1,1))
+
+panel <- ggdraw(core) +
+  draw_line(x = c(0, 1), y = c(2/3, 2/3), size = 0.5, color = "black") +
+  draw_line(x = c(0, 1), y = c(1/3, 1/3), size = 0.5, color = "black")
+
+# ---------------- Save ----------------
+save_both(panel, "Panel_final_cost_per_mg_rounded_fixed_kpis", w = 180, h = 175)
