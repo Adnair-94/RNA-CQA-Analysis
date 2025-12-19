@@ -1,0 +1,37 @@
+# =============================================================
+# EXPORT: raw cytokine data + computed log2 fold-change (no cleaning)
+# =============================================================
+
+library(tidyverse)
+
+infile <- "C://Users//CBE-User ZK02//OneDrive//Documents//cytokines_tidy.csv"
+
+# Read as-is (no cleaning, just minimal type handling)
+dat_raw <- read_csv(infile, show_col_types = FALSE, guess_max = 1e5) %>%
+  mutate(
+    Buffer    = gsub("₃", "3", Buffer, fixed = TRUE),
+    Buffer    = factor(Buffer, levels = c("NaCl","CH3COOK")),
+    Replicate = factor(Replicate),
+    Cycle     = factor(Cycle, 
+                       levels = c("Cycle1","Cycle2","Cycle3","Cycle4","Cycle5","Standard process")),
+    Cytokine  = as.character(Cytokine),
+    Value     = as.numeric(Value)
+  ) %>%
+  drop_na(Buffer, Replicate, Cycle, Cytokine, Value)
+
+# --- Compute fold-change vs Standard process (per Buffer × Cytokine)
+eps <- 1e-6
+ref_raw <- dat_raw %>%
+  filter(Cycle == "Standard process") %>%
+  group_by(Buffer, Cytokine) %>%
+  summarise(std_mean = mean(Value, na.rm = TRUE), .groups = "drop")
+
+dat_fc_raw <- dat_raw %>%
+  left_join(ref_raw, by = c("Buffer","Cytokine")) %>%
+  mutate(log2FC = log2((Value + eps) / (std_mean + eps)))
+
+# --- Export unedited data + log2FC
+write_csv(dat_fc_raw, "cytokines_log2FC_raw.csv")
+
+# Preview a few rows
+print(dat_fc_raw, n = 20)
