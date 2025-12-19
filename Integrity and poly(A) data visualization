@@ -1,0 +1,208 @@
+# =========================
+# ONE-FILE: Integrity + PolyA (stacked)
+# =========================
+library(tidyverse)
+library(ragg)
+library(patchwork)
+library(grid)
+
+# ---- Output folder ----
+outdir <- "fig_integrity_polya/final"
+dir.create(outdir, showWarnings = FALSE, recursive = TRUE)
+
+# ---- Sizes ----
+W_MM      <- 180
+H_INT_MM  <- 60
+H_POLY_MM <- 85
+
+# ---- Theme ----
+.pt <- ggplot2::.pt
+nat_theme <- theme_minimal(base_size = 12, base_family = "Arial") +
+  theme(
+    panel.background  = element_rect(fill = "white", color = NA),
+    plot.background   = element_rect(fill = "white", color = NA),
+    panel.grid        = element_blank(),
+    panel.border      = element_rect(color = "black", fill = NA, linewidth = 0.3),
+    axis.line         = element_line(color = "black", linewidth = 0.3),
+    axis.ticks        = element_line(color = "black", linewidth = 0.3),
+    axis.ticks.length = unit(-0.15, "cm"),
+    text              = element_text(size = 12, family = "Arial", color = "black"),
+    axis.text         = element_text(size = 12, face = "bold", color = "black"),
+    axis.title        = element_text(size = 12, face = "bold", color = "black"),
+    strip.text        = element_text(size = 12, face = "bold", color = "black"),
+    legend.text       = element_text(size = 12, face = "bold", color = "black"),
+    legend.title      = element_blank(),
+    plot.title        = element_text(size = 12, face = "bold", hjust = 0.5, color = "black"),
+    plot.caption      = element_text(colour = "black"),
+    plot.margin       = margin(6,6,6,6,"pt")
+  )
+update_geom_defaults("text",  list(size = 12/.pt, family = "Arial", fontface = "bold"))
+update_geom_defaults("label", list(size = 12/.pt, family = "Arial", fontface = "bold"))
+
+# -------------------------
+# INTEGRITY
+# -------------------------
+int_df <- readr::read_csv(
+  "C://Users//CBE-User ZK02//OneDrive//Recycling integrity .csv",
+  show_col_types = FALSE
+) %>% mutate(Cycle = factor(Cycle, levels = sort(unique(Cycle))))
+
+int_long_for <- function(df, input_col, output_col, buffer_label){
+  present <- intersect(c(input_col, output_col), names(df))
+  if(length(present) == 0) return(tibble())
+  df %>%
+    select(Cycle, all_of(present)) %>%
+    pivot_longer(all_of(present), names_to = "raw", values_to = "Integrity") %>%
+    mutate(
+      Condition = recode(raw,
+                         !!input_col  := "Crude RNA",
+                         !!output_col := "Purified RNA",
+                         .default = NA_character_),
+      Buffer = buffer_label
+    ) %>%
+    filter(is.finite(Integrity), !is.na(Condition))
+}
+
+int_long <- bind_rows(
+  int_long_for(int_df, "Input (NaCl Buffer)", "Output (NaCl Buffer)", "NaCl"),
+  int_long_for(int_df, "Input (KoAc Buffer)", "Output (KoAc Buffer)", "CH3COOK")
+) %>% mutate(
+  Buffer    = factor(Buffer, levels = c("CH3COOK","NaCl"),
+                     labels = c("CH\u2083COOK buffer","NaCl buffer")),
+  Condition = factor(Condition, levels = c("Crude RNA","Purified RNA"))
+)
+
+# Precompute mean±sd for error bars
+int_sum <- int_long %>%
+  group_by(Buffer, Cycle, Condition) %>%
+  summarise(mean = mean(Integrity, na.rm = TRUE),
+            sd   = sd(Integrity,   na.rm = TRUE), .groups = "drop")
+
+p_integrity <- ggplot(int_long, aes(Cycle, Integrity)) +
+  stat_summary(aes(fill = Condition), fun = mean, geom = "col",
+               position = position_dodge(width = 0.8),
+               width = 0.45, color = "black", linewidth = 0.4) +
+  geom_point(aes(fill = Condition),
+             position = position_jitterdodge(jitter.width = 0.08,
+                                             dodge.width = 0.8, seed = 1),
+             shape = 21, size = 2.2, stroke = 0.4,
+             colour = "black", alpha = 0.45, show.legend = FALSE) +
+  geom_errorbar(
+    data = int_sum, inherit.aes = FALSE,
+    aes(x = Cycle, y = mean, ymin = mean - sd, ymax = mean + sd, group = Condition),
+    position = position_dodge(width = 0.8),
+    width = 0.22, linewidth = 0.5
+  ) +
+  geom_hline(yintercept = 95, linetype = "22", linewidth = 0.5) +
+  scale_fill_manual(values = c("Crude RNA" = "white", "Purified RNA" = "grey70")) +
+  scale_y_continuous(limits = c(0,100), breaks = seq(0,100,20),
+                     expand = expansion(mult = c(0,0.02))) +
+  labs(title = "Cycle-wise RNA integrity",
+       x = "Cycle",
+       y = "RNA integrity\n(% full-length transcripts)") +
+  facet_wrap(~ Buffer, ncol = 2) +
+  nat_theme +
+  theme(legend.position="bottom",
+        legend.box = "horizontal",
+        legend.justification = "center",
+        legend.spacing.x = unit(7.5, "mm"),
+        legend.key.width  = unit(5, "mm"),
+        legend.key.height = unit(5, "mm"),
+        legend.text = element_text(margin = margin(l = 2, r = 6, unit = "mm")),
+        legend.box.spacing = unit(0, "mm"))
+
+# == Poly(A) overlay: Standard (grey fill) behind Cycle 1 & 5 (black outline), identity overlap ==
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# -- file paths (use your exact ones)
+file_std <- "C://Users//CBE-User ZK02//Downloads//PolyA_per_sample_2025-11-11 (1)//CE-4-12-2024-polyA_eGFP_1-A_filtered.csv"
+file_c1  <- "C://Users//CBE-User ZK02//Downloads//PolyA_per_sample_2025-11-11 (1)//CE-11-10-2024-Elution-1_Rep-1-polyA_filtered.csv"
+file_c5  <- "C://Users//CBE-User ZK02//Downloads//PolyA_per_sample_2025-11-11 (1)//CE-11-10-2024-Elution-5_Rep-1-polyA_filtered.csv"
+
+.read_polya <- function(path) {
+  read_csv(path, show_col_types = FALSE) %>%
+    mutate(
+      ClosestLength = as.integer(ClosestLength),
+      RelAbundance  = as.numeric(RelAbundance)
+    ) %>%
+    filter(!is.na(ClosestLength), !is.na(RelAbundance)) %>%
+    { if (max(.$RelAbundance, na.rm = TRUE) <= 1.001) mutate(., RelAbundance = RelAbundance * 100) else . }
+}
+
+std_raw <- .read_polya(file_std)
+c1_raw  <- .read_polya(file_c1) %>% mutate(CyclePanel = "Cycle 1")
+c5_raw  <- .read_polya(file_c5) %>% mutate(CyclePanel = "Cycle 5")
+cycles  <- bind_rows(c1_raw, c5_raw) %>%
+  mutate(CyclePanel = factor(CyclePanel, levels = c("Cycle 1", "Cycle 5")))
+
+# Common x-axis levels so nothing gets dropped
+x_levels <- sort(unique(c(std_raw$ClosestLength, cycles$ClosestLength)))
+
+# Standard background = per-length max (no stacking; keeps the grey “shape” faithful)
+std_bg <- std_raw %>%
+  group_by(ClosestLength) %>%
+  summarise(RelAbundance = max(RelAbundance, na.rm = TRUE), .groups = "drop") %>%
+  complete(ClosestLength = x_levels, fill = list(RelAbundance = 0)) %>%
+  mutate(
+    ClosestLength = factor(ClosestLength, levels = x_levels),
+    RelAbundance  = pmin(pmax(RelAbundance, 0), 100) # clamp to [0,100] just in case
+  )
+
+# Cycles: identity overlap (no grouping/summing)
+cycles_plot <- cycles %>%
+  mutate(ClosestLength = factor(ClosestLength, levels = x_levels))
+
+# Duplicate standard background to both facets
+std_bg_facets <- tidyr::crossing(
+  std_bg,
+  tibble(CyclePanel = factor(c("Cycle 1","Cycle 5"), levels = c("Cycle 1","Cycle 5")))
+)
+
+p_polya <- ggplot() +
+  # Standard: wide grey bars behind
+  geom_col(
+    data = std_bg_facets,
+    aes(x = ClosestLength, y = RelAbundance),
+    fill = "grey85", width = 0.9
+  ) +
+  # Cycles: thin black outline bars, identity overlap (no position dodge)
+  geom_col(
+    data = cycles_plot,
+    aes(x = ClosestLength, y = RelAbundance),
+    fill = "black", colour = "black", width = 0.12, linewidth = 0.4,
+    position = position_identity()
+  ) +
+  scale_y_continuous(limits = c(0, 100), breaks = seq(0, 100, 25),
+                     expand = expansion(mult = c(0, 0.05))) +
+  labs(title = "Poly(A) distribution",
+       x = "Poly(A) tail length (nt)",
+       y = "Relative abundance (%)") +
+  facet_wrap(~ CyclePanel, ncol = 2) +
+  nat_theme +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 90, vjust = 0.5, size = 8, face = "bold"),
+    axis.ticks.length = unit(0, "cm")
+  )
+# -------------------------
+# COMBINE + EXPORT
+# -------------------------
+combo <- p_integrity / p_polya + plot_layout(heights = c(H_INT_MM, H_POLY_MM))
+
+ggsave(file.path(outdir, "Integrity_PolyA_combined.tiff"),
+       combo, width = 180, height = 170, units = "mm",
+       dpi = 600, device = ragg::agg_tiff, compression = "lzw")
+
+ggsave(file.path(outdir, "Integrity_PolyA_combined.jpeg"),
+       combo, width = 180, height = 170, units = "mm", dpi = 600)
+
+ggsave(file.path(outdir, "Integrity_panel.tiff"), p_integrity,
+       width = 180, height = 85, units = "mm",
+       dpi = 600, device = ragg::agg_tiff, compression = "lzw")
+
+ggsave(file.path(outdir, "PolyA_panel.tiff"), p_polya,
+       width = 180, height = 85, units = "mm",
+       dpi = 600, device = ragg::agg_tiff, compression = "lzw") 
