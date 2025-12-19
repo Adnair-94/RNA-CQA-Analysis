@@ -35,3 +35,402 @@ write_csv(dat_fc_raw, "cytokines_log2FC_raw.csv")
 
 # Preview a few rows
 print(dat_fc_raw, n = 20)
+###########################################################################################
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(grid)        # unit()
+  library(patchwork)
+  library(readr)
+  library(ragg)        # TIFF
+  library(rstatix)     # stats helpers
+})
+
+# ------------------------------------------------------------
+# Global theme — ALL text size 12, Arial, bold
+# ------------------------------------------------------------
+ad_theme <- theme(
+  text = element_text(family = "Arial", size = 12, face = "bold"),
+  rect = element_blank(),
+  panel.grid = element_blank(),
+  axis.line = element_line(color = "black", linewidth = 0.5),
+  axis.ticks.length = unit(-0.15, "cm"),
+  axis.ticks = element_line(colour = "black", linewidth = 0.5),
+  axis.text.x = element_text(color = "black", size = 12,
+                             margin = unit(c(t = 2.5, r = 0, b = 0, l = 0), "mm")),
+  axis.text.y = element_text(color = "black", size = 12,
+                             margin = unit(c(t = 0, r = 2.5, b = 0, l = 0), "mm")),
+  panel.border = element_rect(colour = "black", fill = NA, linewidth = 0.5),
+  axis.title  = element_text(face = "bold", size = 12, hjust = 0.5),
+  axis.text   = element_text(face = "bold", size = 12),
+  strip.text  = element_text(face = "bold", size = 12),
+  legend.text = element_text(size = 12),
+  legend.title= element_text(face = "bold", size = 12),
+  legend.position = "bottom",
+  legend.box = "horizontal",
+  legend.justification = "center",
+  legend.spacing.x = unit(20, "mm"),
+  legend.key.width = unit(5, "mm"),
+  legend.key.height = unit(5, "mm"),
+  legend.margin = margin(t = 3, r = 0, b = 0, l = 0, unit = "mm"),
+  plot.title   = element_text(family="Arial", size=12, face="bold", hjust=0)
+)
+
+# ------------------------------------------------------------
+# Label cleaner (for cytokine names)
+# ------------------------------------------------------------
+clean_labels <- function(x){
+  x <- iconv(x, to = "UTF-8"); x <- trimws(x)
+  x <- gsub("(?i)\\bINF\\s*-\\s*\\?$", "IFN-α", x, perl=TRUE)
+  x <- gsub("(?i)\\bINF\\s*\\?$",      "IFN-β", x, perl=TRUE)
+  x <- gsub("(?i)\\bIFN[- ]*alpha\\b.*","IFN-α", x, perl=TRUE)
+  x <- gsub("(?i)\\bIFN[- ]*beta\\b.*", "IFN-β", x, perl=TRUE)
+  x <- gsub("(?i)\\bIL\\s*[- ]*1\\s*\\?$",      "IL-1β", x, perl=TRUE)
+  x <- gsub("(?i)\\bIL\\s*[- ]*1\\s*beta\\b.*", "IL-1β", x, perl=TRUE)
+  x <- gsub("(?i)\\bMIP\\s*[- ]?1\\s*alpha\\b.*","MIP-1α", x, perl=TRUE)
+  x <- gsub("(?i)\\bMIP\\s*[- ]?1\\s*a\\b.*",    "MIP-1α", x, perl=TRUE)
+  x <- gsub("(?i)^\\s*CCL3\\b.*",                "MIP-1α", x, perl=TRUE)
+  x <- gsub("(?i)\\bMIP\\s*[- ]?1\\s*\\?$",      "MIP-1α", x, perl=TRUE)
+  x <- gsub("(?i)\\bMIP\\s*[- ]?1\\s*beta\\b.*", "MIP-1β", x, perl=TRUE)
+  x <- gsub("(?i)\\bMIP\\s*[- ]?1\\s*b\\b.*",    "MIP-1β", x, perl=TRUE)
+  x <- gsub("(?i)^\\s*CCL4\\b.*",                "MIP-1β", x, perl=TRUE)
+  x <- gsub("(?i)\\bIP\\s*[- ]?10\\b", "IP-10", x, perl=TRUE)
+  x <- gsub("\\?", "", x); x <- gsub("[[:punct:]]+$","",x)
+  x <- gsub("\\s+"," ",x); x <- gsub("\\s*-\\s*","-",x); trimws(x)
+}
+
+# Handy expression for CH₃COOK
+expr_CH3COOK <- expression(bold(CH[3]*COOK))
+
+# ============================================================
+# SECTION 1 — PROTEIN EXPRESSION (Panel A)
+# ============================================================
+wide <- tribble(
+  ~Cycle, ~Repeat, ~`NaCl`, ~`CH3COOK`, ~`Standard process`,
+  1, 1, 40.08, 29.11, 23.56,
+  2, 1, 44.64, 24.52, 28.79,
+  3, 1, 41.36, 31.93, 27.76,
+  4, 1, 43.46, 31.25, NA,
+  5, 1, 41.12, 28.53, NA,
+  1, 2, 47.83, 27.31, NA,
+  2, 2, 50.15, 27.34, NA,
+  3, 2, 49.73, 23.08, NA,
+  4, 2, 53.70, 22.86, NA,
+  5, 2, 53.48, 25.31, NA,
+  1, 3, 43.26, 20.38, NA,
+  2, 3, 43.43, 26.08, NA,
+  3, 3, 50.90, 30.26, NA,
+  4, 3, 45.52, 24.39, NA,
+  5, 3, 45.52, 24.49, NA
+)
+
+long <- wide %>%
+  pivot_longer(cols = c(NaCl, CH3COOK, `Standard process`),
+               names_to = "Condition", values_to = "Percent") %>%
+  filter(!is.na(Percent)) %>%
+  mutate(
+    Cycle     = as.character(Cycle),
+    Condition = factor(Condition, levels = c("NaCl","CH3COOK","Standard process")),
+    X         = if_else(Condition == "Standard process", "Standard process", paste0("Cycle ", Cycle))
+  )
+
+x_levels <- c(paste0("Cycle ", 1:5), "Standard process")
+x_labels <- c("1","2","3","4","5","Standard\nprocess")
+long$X <- factor(long$X, levels = x_levels)
+
+prot_summary <- long %>%
+  group_by(Condition, X) %>%
+  summarise(
+    mean_val = mean(Percent, na.rm = TRUE),
+    sd_val   = sd(Percent, na.rm = TRUE),
+    n        = n(),
+    .groups  = "drop"
+  )
+
+prot_std    <- prot_summary %>% filter(Condition == "Standard process")
+prot_cycles <- prot_summary %>% filter(Condition != "Standard process")
+
+pd <- position_dodge(width = 0.7)
+
+p_A <- ggplot() +
+  geom_col(data = prot_summary,
+           aes(x = X, y = mean_val, fill = Condition),
+           position = pd, width = 0.60, colour = "black", linewidth = 0.5) +
+  geom_errorbar(
+    data = prot_cycles,
+    aes(x = X,
+        ymin = mean_val - sd_val,
+        ymax = mean_val + sd_val,
+        group = Condition),
+    position = pd,
+    width = 0.2,
+    linewidth = 0.5,
+    colour = "black"
+  ) +
+  geom_errorbar(
+    data = prot_std,
+    aes(x = X,
+        ymin = mean_val - sd_val,
+        ymax = mean_val + sd_val,
+        group = Condition),
+    position = pd,
+    width = 0.2,
+    linewidth = 0.5,
+    colour = "grey40"
+  ) +
+  geom_point(
+    data = long %>% filter(Condition %in% c("NaCl","CH3COOK")),
+    aes(x = X, y = Percent, shape = Condition),
+    position = position_jitterdodge(jitter.width = 0.08, jitter.height = 0,
+                                    dodge.width = 0.7, seed = 1),
+    size = 2.2, stroke = 0.5, fill = "black", colour = "black", alpha = 0.55
+  ) +
+  scale_shape_manual(values = c("NaCl" = 21, "CH3COOK" = 21), guide = "none") +
+  geom_point(
+    data = long %>% filter(Condition == "Standard process"),
+    aes(x = X, y = Percent),
+    position = position_jitter(width = 0.08, height = 0, seed = 1),
+    size = 2.2, shape = 21, stroke = 0.5, fill = "white", colour = "black"
+  ) +
+  scale_fill_manual(
+    breaks = c("NaCl","CH3COOK","Standard process"),
+    labels = c("NaCl", expr_CH3COOK, "Standard process"),
+    values = c("NaCl"          = "grey40",
+               "CH3COOK"       = "grey80",
+               "Standard process" = "black"),
+    name = "Condition"
+  ) +
+  scale_y_continuous(name = "eGFP-positive cells (%)",
+                     limits = c(0, 100),
+                     breaks = seq(0, 100, by = 20),
+                     expand = expansion(mult = c(0, 0.02))) +
+  scale_x_discrete(limits = x_levels, labels = x_labels) +
+  labs(x = "Cycle", title = "eGFP expression across recycling cycles") +
+  ad_theme +
+  theme(
+    legend.position = "bottom",
+    strip.text = element_text(family = "Arial", face = "plain"),
+    axis.title.x = element_text(face = "bold"),
+    axis.title.y = element_text(face = "bold", margin = margin(r = 3)),
+    axis.text.x  = element_text(face = "bold"),
+    axis.text.y  = element_text(face = "bold"),
+    legend.box = "horizontal",
+    legend.justification = "center",
+    legend.spacing.x = unit(7.5, "mm"),
+    legend.key.width  = unit(5, "mm"),
+    legend.key.height = unit(5, "mm"),
+    legend.text = element_text(margin = margin(l = 2, r = 6, unit = "mm")),
+    legend.box.spacing = unit(0, "mm"),
+    plot.title = element_text(size = 12, face = "bold", hjust = 0.5)
+  )
+
+# ============================================================
+# SECTION 2 — CYTOKINE HEATMAP (Panel B)
+# ============================================================
+
+infile <- "C:/Users/CBE-User ZK02/OneDrive/Documents/cytokines_log2FC_raw.csv"
+
+raw_fc <- readr::read_csv(infile, show_col_types = FALSE, guess_max = 1e5) %>%
+  mutate(
+    Buffer    = gsub("₃","3", Buffer, fixed = TRUE),
+    Buffer    = factor(Buffer, levels = c("NaCl","CH3COOK")),
+    Replicate = factor(Replicate),
+    Cycle     = factor(Cycle, levels = c("Cycle1","Cycle2","Cycle3","Cycle4","Cycle5","Standard process")),
+    Cytokine  = as.character(Cytokine),
+    log2FC    = as.numeric(log2FC)
+  ) %>%
+  filter(!str_detect(str_to_lower(Cytokine), "\\begfp\\b|\\bgfp\\b")) %>%
+  mutate(
+    Cytokine = clean_labels(Cytokine)
+  ) %>%
+  mutate(
+    Cytokine = dplyr::recode(
+      Cytokine,
+      "IL-8"    = "CXCL8",
+      "IP-10"   = "CXCL10",
+      "MIP-1α"  = "CCL3",
+      "RANTES"  = "CCL5",
+      .default  = Cytokine
+    )
+  ) %>%
+  drop_na(Buffer, Replicate, Cycle, Cytokine, log2FC)
+
+avg_fc <- raw_fc %>%
+  group_by(Buffer, Cytokine, Cycle) %>%
+  summarise(log2FC = mean(log2FC, na.rm = TRUE), .groups = "drop") %>%
+  mutate(log2FC = ifelse(Cycle == "Standard process", 0, log2FC))
+
+cyto_levels <- c("CXCL8", "CCL3", "CCL5", "IL-1β", "CXCL10", "IFN-α", "IFN-β")
+cycle_levels     <- c("Cycle1","Cycle2","Cycle3","Cycle4","Cycle5","Standard process")
+cycle_disp_labs  <- c("1","2","3","4","5","Standard\nprocess")
+
+avg_fc <- avg_fc %>%
+  mutate(
+    Cytokine = factor(Cytokine, levels = cyto_levels),
+    Cycle    = factor(Cycle, levels = cycle_levels),
+    Buffer_lab = factor(
+      if_else(Buffer == "CH3COOK",
+              "bold(CH[3]*COOK)",
+              "bold(NaCl)"),
+      levels = c("bold(NaCl)", "bold(CH[3]*COOK)")
+    )
+  )
+
+max_abs <- max(abs(avg_fc$log2FC), na.rm = TRUE)
+if (!is.finite(max_abs) || max_abs < 1e-6) max_abs <- 1
+max_abs <- ceiling(max_abs * 2) / 2
+
+p_B_facet <- ggplot(avg_fc, aes(Cycle, Cytokine, fill = log2FC)) +
+  geom_tile(colour = "white", linewidth = 0.35) +
+  facet_wrap(~ Buffer_lab, nrow = 1, labeller = label_parsed) +
+  scale_x_discrete(labels = setNames(cycle_disp_labs, cycle_levels)) +
+  scale_fill_gradient2(
+    low = "#3B4CC0", mid = "white", high = "#B40426",
+    midpoint = 0, limits = c(-max_abs, max_abs),
+    name = expression("log"[2]*" fold change vs Standard process")
+  ) +
+  labs(title = "Cytokine signatures by buffer", x = NULL, y = NULL) +
+  ad_theme +
+  theme(
+    legend.position  = "bottom",
+    axis.text.x      = element_text(angle = 45, hjust = 1, vjust = 1),
+    strip.background = element_rect(fill = "white", colour = "black", linewidth = 0.5),
+    plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
+    legend.title = element_text(size = 12),
+    legend.text  = element_text(size = 12),
+    strip.text   = element_text(size = 12, face = "bold"),
+    axis.title   = element_text(size = 12),
+    axis.text    = element_text(size = 12)
+  )
+
+# ============================================================
+# SECTION 3 — STATS (eGFP & Cytokines)
+# ============================================================
+
+stats_dir <- "stats_cell_assays"
+dir.create(stats_dir, showWarnings = FALSE)
+
+## 3A. eGFP % positive
+
+# 3A.1 Kruskal–Wallis across cycles (Cycle1–5) within each buffer
+egfp_kw_cycles <- long %>%
+  filter(Condition %in% c("NaCl","CH3COOK")) %>%
+  mutate(Buffer = as.character(Condition)) %>%
+  group_by(Buffer) %>%
+  kruskal_test(Percent ~ Cycle)
+
+write_csv(egfp_kw_cycles,
+          file.path(stats_dir, "egfp_kruskal_cycles_by_buffer.csv"))
+
+# 3A.2 Pooled recycling vs Standard process, per buffer (Wilcoxon rank-sum)
+egfp_pooled <- bind_rows(
+  long %>%
+    filter(Condition == "NaCl") %>%
+    mutate(Buffer = "NaCl", Group = "Recycling"),
+  
+  long %>%
+    filter(Condition == "CH3COOK") %>%
+    mutate(Buffer = "CH3COOK", Group = "Recycling"),
+  
+  # Standard process values duplicated so each buffer comparison is independent
+  long %>%
+    filter(Condition == "Standard process") %>%
+    mutate(Buffer = "NaCl", Group = "Standard"),
+  
+  long %>%
+    filter(Condition == "Standard process") %>%
+    mutate(Buffer = "CH3COOK", Group = "Standard")
+) %>%
+  select(Buffer, Group, Percent) %>%
+  mutate(
+    Buffer = factor(Buffer, levels = c("NaCl","CH3COOK")),
+    Group  = factor(Group,  levels = c("Standard","Recycling"))
+  )
+
+# Wilcoxon rank-sum tests per buffer
+egfp_pooled_tests <- egfp_pooled %>%
+  group_by(Buffer) %>%
+  wilcox_test(Percent ~ Group, ref.group = "Standard") %>%
+  add_significance()
+
+# Medians / means and Δmedian (pp) per buffer
+egfp_pooled_summary <- egfp_pooled %>%
+  group_by(Buffer, Group) %>%
+  summarise(
+    n              = n(),
+    median_percent = median(Percent),
+    mean_percent   = mean(Percent),
+    sd_percent     = sd(Percent),
+    .groups        = "drop"
+  )
+
+egfp_pooled_delta <- egfp_pooled_summary %>%
+  select(Buffer, Group, median_percent) %>%
+  pivot_wider(names_from = Group, values_from = median_percent,
+              names_prefix = "median_") %>%
+  mutate(delta_pp = median_Recycling - median_Standard)
+
+egfp_pooled_out <- egfp_pooled_tests %>%
+  left_join(egfp_pooled_delta, by = "Buffer") %>%
+  left_join(
+    egfp_pooled_summary %>% select(Buffer, Group, n, mean_percent, sd_percent),
+    by = c("Buffer")
+  )
+
+write_csv(egfp_pooled_out,
+          file.path(stats_dir, "egfp_pooled_recycling_vs_standard_by_buffer.csv"))
+
+## 3B. Cytokines — one-sample Wilcoxon vs 0 on log2FC, per Buffer × Cytokine
+
+cyto_summary <- raw_fc %>%
+  filter(Cycle != "Standard process") %>%        # only recycling cycles
+  group_by(Buffer, Cytokine) %>%
+  summarise(
+    n             = n(),
+    median_log2FC = median(log2FC, na.rm = TRUE),
+    mean_log2FC   = mean(log2FC, na.rm = TRUE),
+    sd_log2FC     = sd(log2FC, na.rm = TRUE),
+    .groups       = "drop"
+  )
+
+cyto_tests <- raw_fc %>%
+  filter(Cycle != "Standard process") %>%
+  group_by(Buffer, Cytokine) %>%
+  wilcox_test(
+    log2FC ~ 1,  # one-sample vs 0
+    mu = 0
+  ) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance("p.adj")
+
+cyto_out <- cyto_summary %>%
+  left_join(cyto_tests, by = c("Buffer","Cytokine"))
+
+write_csv(cyto_out, file.path(stats_dir, "cytokines_log2FC_wilcoxon_vs0.csv"))
+
+# ============================================================
+# SECTION 4 — ASSEMBLE & EXPORT FIGURES
+# ============================================================
+panel_portrait <- (p_A / p_B_facet)
+
+ggsave("Fig_CellAssays_Panel_Portrait.png",
+       panel_portrait, width = 180, height = 170,
+       units = "mm", dpi = 300, bg = "white")
+
+agg_tiff("Fig_CellAssays_Panel_Portrait.tiff",
+         width = 180, height = 170, units = "mm",
+         res = 600, background = "white", compression = "lzw")
+print(panel_portrait)
+dev.off()
+
+ggsave("Protein_Expression_A.png", p_A, width = 6.5, height = 3.34,
+       dpi = 300, bg = "white")
+ggsave("Cytokines_B_Faceted.png",  p_B_facet, width = 7, height = 3.34,
+       dpi = 300, bg = "white")
+
+agg_tiff("Protein_Expression_A.tiff", width = 6.5, height = 3.34, units = "in",
+         res = 600, background = "white", compression = "lzw"); print(p_A); dev.off()
+agg_tiff("Cytokines_B_Faceted.tiff", width = 7, height = 3.34, units = "in",
+         res = 600, background = "white", compression = "lzw"); print(p_B_facet); dev.off()
+
+
